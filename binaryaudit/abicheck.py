@@ -37,8 +37,15 @@ def serialize(fn):
     return process.returncode, out, cmd
 
 
-def compare(ref, cur):
+def compare(ref, cur, suppr=[]):
     cmd = ["abidiff", ref, cur]
+
+    if len(suppr) > 0:
+        cmd = ["abidiff"]
+        for sup_fn in suppr:
+            cmd += ["--suppr", sup_fn]
+        cmd += [ref, cur]
+    
     sout = subprocess.PIPE
     serr = subprocess.STDOUT
     shell = False
