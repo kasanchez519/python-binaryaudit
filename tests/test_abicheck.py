@@ -54,4 +54,3 @@ class AbicheckTestSuite(unittest.TestCase):
         expected_out = open(os.path.join(data_dir, 'test_compare_with_suppress_expected')).read()
         assert code == 0
         assert out == expected_out
-        
