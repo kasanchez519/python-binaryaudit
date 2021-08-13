@@ -6,6 +6,7 @@ import argparse
 arg_parser_common = argparse.ArgumentParser(add_help=False)
 arg_parser_common.add_argument('-v', '--verbose', action='store_true',
                                help="Verbose output.")
+arg_parser_common.add_argument("--no-suppressions", action="store_true", help="Disable any default suppressions")
 
 # Database, reusable
 arg_parser_db = argparse.ArgumentParser(add_help=False)

@@ -5,6 +5,7 @@ import tempfile
 import shutil
 import tarfile
 import glob
+import sys
 from binaryaudit import util
 from binaryaudit import abicheck
 from binaryaudit.db import VERSION_NOT_AVAILABLE
@@ -120,3 +121,96 @@ def recipe_abicheck(recipe_binaudit_path, buildhistory_baseline_dir, bulidhistor
         res_details = out
 
     return item_name, base_version, new_version, exec_time, result, res_details, ret_acc
+
+
+def poky_binaryaudit(use_supppressions):
+    import argparse
+    from binaryaudit.db import TRANSACTION_MAIN_RESULT_FAILED, TRANSACTION_MAIN_RESULT_PASSED, TRANSACTION_MAIN_RESULT_PENDING
+    from binaryaudit import cli
+    from binaryaudit.cli import arg_parser, arg_parser_rpm
+    args = cli.arg_parser.parse_args()
+
+    db_conn = None
+    if 'y' == args.enable_telemetry:
+        try:
+            cli.validate_telemetry_args(args)
+        except argparse.ArgumentError as e:
+            util.fatal(str(e))
+            sys.exit(3)
+
+        from binaryaudit.db import wrapper as db_wrapper
+        try:
+            db_conn = db_wrapper(args.db_config, util.logger)
+            db_conn.initialize_db()
+        except Exception as e:
+            util.error(str(e))
+
+    if args.compare_buildhistory:
+        suppr = []
+        if args.global_suppression is not None and use_supppressions:
+            suppr.append(args.global_suppression)
+        d1 = args.buildhistory_baseline
+        d2 = args.buildhistory_current
+
+        if not 'y' == args.enable_telemetry and not os.path.isdir(d1):
+                util.warn("Directory '{}' doesn't exist.".format(d1))
+                sys.exit(1)
+        # Either need the baseline directory passed or telemetry enabled
+        # to fetch the baseline.
+        if not os.path.isdir(d2):
+                util.warn("Directory '{}' doesn't exist.".format(d2))
+                sys.exit(1)
+
+        if 'y' == args.enable_telemetry:
+            prod_id = db_conn.get_product_id(args.product_name, args.derivative)
+            if not prod_id:
+                util.error("Couldn't find a matching product ID.")
+                sys.exti(1)
+            util.debug("product_id: '{}'".format(prod_id))
+
+            if d1:
+                util.warn("Telemetry is enabled, ignoring the supplied buildhistory baseline.")
+            baseline_id, d1 = retrieve_baseline(db_conn, prod_id)
+            if not baseline_id or not d1:
+                sys.exit(1)
+
+            db_conn.insert_main_transaction(args.build_id, prod_id, args.buildurl,
+                                            args.logurl, TRANSACTION_MAIN_RESULT_PENDING, baseline_id)
+
+        build_ret_acc = abicheck.DIFF_OK
+        build_result = TRANSACTION_MAIN_RESULT_PASSED
+
+        import glob
+        # Only iterate through packages for now.
+        # Only iterate through d2 now. Reverse iteration might bake sense, too.
+        for fn in glob.glob(d2 + "/packages/*/*/binaryaudit", recursive=False):
+            item_name, base_version, new_version, exec_time, result, res_details, ret_acc = recipe_abicheck(fn, d1, d2, suppr)
+
+            # Set the build accumulated value to the highest found score.
+            if ret_acc > build_ret_acc:
+                build_ret_acc = ret_acc
+
+            util.debug("item: '{}', base: '{}', new: '{}', duration: '{}', res: '{}'".format(item_name, base_version, new_version, exec_time, result))
+
+            if 'y' == args.enable_telemetry:
+                db_conn.insert_ba_transaction_details(args.build_id, prod_id, item_name, base_version, new_version, exec_time, result, res_details)
+
+        if 'y' == args.enable_telemetry:
+            if abicheck.DIFF_OK != build_ret_acc:
+                build_result = TRANSACTION_MAIN_RESULT_FAILED
+            db_conn.update_ba_test_result(args.build_id, prod_id, build_result)
+    elif args.insert_baseline:
+        if not 'n' == args.enable_telemetry:
+            # Another way would be to implicitly enable telemetry
+            util.error("Telemetry is not anabled")
+            sys.exit(1)
+
+        product_id = db_conn.get_product_id(args.product_name, args.derivative)
+
+        db_conn.insert_main_transaction(args.build_id, product_id, args.buildurl, args.logurl, TRANSACTION_MAIN_RESULT_PASSED)
+
+        data = None
+        with open(args.insert_baseline, "rb") as f:
+            data = f.read()
+            f.close
+        db_conn.insert_ba_baseline_data(args.build_id, product_id, data)
